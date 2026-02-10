@@ -1,101 +1,138 @@
-section .data
-    filename db "./main.exe", 0
+ExitProcess proto
+CreateFileA proto
+ReadFile  proto
+SetFilePointer proto
+extrn printf:proc
 
-    msg_not_pe db "Not a PE file", 0
-    msg_not_pe_len equ $ - msg_not_pe
-    msg_is_pe db "Is a PE file", 0
-    msg_is_pe_len equ $ - msg_is_pe
-section .bss
-    dos_magic resb 2
-    e_lfanew resb 4
-    pe_magic resb 4
+.data
+	;Strings
+	path BYTE ".\sample.exe", 0
 
-    optional_header_offset resb 4
-    file_bit resb 2
-section .text
-    global _start
+	msg_dosheader db "DOS HEADER:", 10, 0
+	msg_dosheader_magic db 9, "Magic: 0x%X", 10, 0
+	msg_dosheader_e_lfanew db 9, "File address of new exe header: 0x%X", 10, 0
 
-_start:
-    ;read file
-    mov rax, 2
-    mov rdi, filename
-    mov rsi, 0
-    mov rdx, 0
-    syscall
+	msg_ntheader db "NT HEADER:", 10, 0
+	msg_ntheader_signature db 9, "PE Signature: 0x%X", 10, 0
 
-    ;get dos magic
-    mov rdi, rax
-    mov rax, 0
-    mov rsi, dos_magic
-    mov rdx, 2
-    syscall
+	;Others
+	SIZEOF_IMAGE_FILE_HEADER dd 18h
+.data?
+	;Others
+	hFile QWORD ?
 
-    ;pe file check
-    cmp word [dos_magic], 0x5A4D
-    jnz fail
-    mov rax, 1
-    mov rdi, 1
-    mov rsi, msg_is_pe
-    mov rdx, msg_is_pe_len
-    syscall
+	;DOS header
+	e_magic WORD ?
+	e_lfanew DWORD ?
+	
+	;NT header
+	Signature DWORD ?
 
-;getting NT header
-    ;set file offset to e_lfanew
-    mov rax, 8
-    mov rdi, 3
-    mov rsi, 0x3C
-    mov rdx, 0
-    syscall
-    ;read NT header offset
-    mov rax, 0
-    mov rdi, 3
-    mov rsi, e_lfanew
-    mov rdx, 4
-    syscall
-    ;set file offset to NT header
-    mov rax, 8
-    mov rsi, [e_lfanew]
-    mov rdi, 3
-    mov rdx, 0
-    syscall
-    ;read the NT header
-    mov rax, 0
-    mov rdi, 3
-    mov rsi, pe_magic
-    mov rdx, 4
-    syscall
-    cmp dword [pe_magic], 0x00004550
-    jnz fail
+	;Optional header
+	Magic WORD ?
 
-;Checking 32 or 64 bit
-    ;set offset to after 4 byte (PE magic)
-    mov eax, [e_lfanew]
-    add eax, 24
-    mov [optional_header_offset], eax
-    mov rax, 8
-    mov rdi, 3
-    mov rsi, [optional_header_offset]
-    mov rdx, 0
-    syscall
-    ;read the file bit
-    mov rax, 0
-    mov rdi, 3
-    mov rsi, file_bit
-    mov rdx, 2
-    syscall
-    cmp word [file_bit], 0x020B
+.code
+main proc
+	sub rsp, 40
+;Check PE file arch: Reading the offsets using SetFilePointer + ReadFile
+	;Get file handle
+	lea rcx, path
+	mov rdx, 80000000h ;GENERIC_READ
+	mov r8, 1 ;FILE_SHARE_READ
+	mov r9, 0
+	mov DWORD PTR [rsp+20h], 3 ;OPEN_EXISTING
+	mov DWORD PTR [rsp+28h], 1 ;FILE_ATTRIBUTE_READONLY
+	mov DWORD PTR [rsp+30h], 0
+	call CreateFileA
+	mov hFile, rax
 
-    jmp exit
+	;Read the DOS magic
+	mov rcx, hFile
+	lea rdx, e_magic
+	mov r8, 2
+	mov r9, 0
+	mov DWORD PTR [rsp+20h], 0
+	call ReadFile
+	;Dos magic check
+	cmp [e_magic], 5A4Dh
+	jnz Exit
 
-fail:
-    mov rax, 1
-    mov rdi, 1
-    mov rsi, msg_not_pe
-    mov rdx, msg_not_pe_len
-    syscall
-    jmp exit
+	;Get NT magic offset
+	mov rcx, hFile
+	mov rdx, 3Ch
+	mov r8, 0
+	mov r9, 0
+	call SetFilePointer 
+	mov rcx, hFile
+	lea rdx, e_lfanew
+	mov r8, 4
+	mov r9, 0
+	mov DWORD PTR [rsp+20h], 0
+	call ReadFile
+	
+	;Read + NT magic check
+	mov rcx, hFile
+	mov edx, e_lfanew
+	mov r8, 0
+	mov r9, 0
+	call SetFilePointer
+	mov rcx, hFile
+	lea rdx, Signature
+	mov r8, 4
+	mov r9, 0
+	mov DWORD PTR [rsp+20h], 0
+	call ReadFile
+	cmp [Signature], 00004550h
+	jnz Exit
 
-exit:
-    mov rax, 60
-    mov rdi, 0
-    syscall
+	;Read file architecture (Magic)
+	mov rcx, hFile
+	mov edx, e_lfanew
+	add edx, SIZEOF_IMAGE_FILE_HEADER
+	mov r8, 0
+	mov r9, 0
+	call SetFilePointer
+	mov rcx, hFile
+	lea rdx, Magic
+	mov r8, 2
+	mov r9, 0
+	call ReadFile
+
+	;Print info of DOS header
+	lea rcx, msg_dosheader
+	call printf
+	lea rcx, msg_dosheader_magic
+	movzx edx, e_magic
+	call printf
+	lea rcx, msg_dosheader_e_lfanew
+	mov edx, e_lfanew
+	call printf
+	;Print info of NT header
+	lea rcx, msg_ntheader
+	call printf
+	lea rcx, msg_ntheader_signature
+	mov edx, Signature
+	call printf
+	
+	;Check file architecture (Magic)
+	cmp [Magic], 020Bh
+	jnz PE32bit
+
+
+; Parsing Optional, Section header of 64 bit PE file
+PE64bit:
+	mov rax, 2
+	jmp Exit
+
+
+
+; Parsing Optional, Section header of 32 bit PE file
+PE32bit:
+	mov rax, 1
+	jmp Exit
+
+Exit:
+	mov rcx, 0
+	call ExitProcess
+main endp
+END
