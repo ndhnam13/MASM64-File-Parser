@@ -1,3 +1,13 @@
+## Cách parse các section
+
+> **PE32 và PE32+ có độ lớn của Optional Header khác nhau => Từ Optional Header trở đi phải parse riêng**
+
+Dùng SetFilePointer để đặt con trỏ file đến đầu offset, ReadFile để lấy nội dung
+
+Tham khảo về offset, size của các section của cả PE32 và PE32+
+
+- https://learn.microsoft.com/en-us/windows/win32/debug/pe-format
+
 ## Cách parse tên DLL, tên API import 
 
 Sau khi parse xong Optional và Section header ta sẽ có những thông tin sau
