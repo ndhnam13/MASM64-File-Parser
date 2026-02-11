@@ -44,7 +44,12 @@ DllNameOffset = imageBase + <section>.RawOffset + (nameRVA − <section>.VA)
 
 ```py
 firstThunkOffset = imageBase + <section>.RawOffset + (OftVA − <section>.VA)
-firstFunctionOffset = [imageBase + <section>.RawOffset + (firstThunkOffset − <section>.VA)] + 2
+```
+
+- Tại đây ta sẽ lấy 4 byte đầu là RVA của firstFunctionOffset, áp dụng công thúc để tìm ra offset
+
+```
+firstFunctionOffset = [imageBase + <section>.RawOffset + (firstFunctionRVA − <section>.VA)] + 2
 ```
 
 - Ta có được tên của function đầu tiên
@@ -61,5 +66,5 @@ Nếu DLL import nhiều hơn 1 function thì sau 8 byte từ firstThunkOffset s
 
 REFs
 
-
 - https://www.ired.team/miscellaneous-reversing-forensics/windows-kernel-internals/pe-file-header-parser-in-c++
+
