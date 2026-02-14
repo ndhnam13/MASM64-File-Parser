@@ -47,7 +47,7 @@ extern printf:proc
 	msg_sectionheader db "3. Section Header", 10 ,0
 	msg_sectionheader_count db 9, "- Section %d: ", 0
 	msg_sectionheader_sectionname db "%s", 10, 0
-	msg_sh_name db 9, 9, "Section name index (string tbl index):0x%X", 10, 0
+	msg_sh_name db 9, 9, "Section name index (.shstrtab index):0x%X", 10, 0
     msg_sh_type db 9, 9, "Section type :0x%X", 10, 0
     msg_sh_flags db 9, 9, "Section flags :0x%llX", 10, 0
     msg_sh_addr db 9, 9, "Section virtual addr at execution :0x%llX", 10, 0
@@ -57,6 +57,21 @@ extern printf:proc
     msg_sh_info db 9, 9, "Additional section information :0x%X", 10, 0
     msg_sh_addralign db 9, 9, "Section alignment :0x%llX", 10, 0
     msg_sh_entsize db 9, 9, "Entry size if section holds table :0x%llX", 10, 0
+
+;Symbol table
+	SHT_SYMTAB DWORD 2
+	SHT_DYNSYM DWORD 0Bh
+	SHT_STRTAB DWORD 3
+	ST_ENTSIZE QWORD 24
+	msg_symboltable db 9, 9, "* Symbol Table:", 10, 0
+	msg_symboltable_symbol db 9, 9, " + Symbol %d: %s", 10, 0
+	msg_st_name db 9, 9, 9, "Symbol name index (.strtab idx) :0x%X", 10, 0
+    msg_st_info db 9, 9, 9, "Symbol type and binding :0x%X", 10, 0
+    msg_st_other db 9, 9, 9, "Symbol visibility :0x%X", 10, 0
+    msg_st_shndx db 9, 9, 9, "Section index :0x%X", 10, 0
+    msg_st_value db 9, 9, 9, "Symbol value :0x%X", 10, 0
+    msg_st_size db 9, 9, 9, "Symbol size :0x%X", 10, 0
+
 .data?
 ;Others
 	hFile QWORD ?
@@ -79,6 +94,11 @@ extern printf:proc
 
 ;Section header
 	SectionHeaderStringTableOffset QWORD ?
+
+;Symbol table
+	StringTableOffset QWORD ?
+	ST_ENTNUM QWORD ?
+	
 
 .code
 main PROC
@@ -277,8 +297,8 @@ ParseSectionHeader64:
 	add rax, e_shoff
 	mov CurrentOffset, rax ;CurrentOffset now has the address of section header
 
-	;Get the address of .strtab section: CurrentOffset + e_shstrndx*e_shentsize
-	;Get the sh_offset value off .strtab section
+	;Get the address of .shstrtab section header: lpFileBuffer + e_shoff + e_shstrndx*e_shentsize
+	;Get the sh_offset value off .shstrtab section
 	mov rbx, CurrentOffset
 	mov eax, e_shstrndx
 	mov ecx, e_shentsize
@@ -290,15 +310,14 @@ ParseSectionHeader64:
 	mov r15, 0 ;Counter
 ParseSectionHeader64Loop:
 	cmp r15d, e_shnum
-	je ParseSymbolTable64
+	je PLACEHOLDER
 
 	lea rcx, msg_sectionheader_count
 	mov rdx, r15
 	call printf
-
+	
 	mov rbx, CurrentOffset
 	;Get current Section name offset:
-	
 	mov rdi, lpFileBuffer
 	add rdi, SectionHeaderStringTableOffset
 	mov eax, DWORD PTR [rbx] ;sh_name
@@ -348,6 +367,89 @@ ParseSectionHeader64Loop:
     mov rdx, QWORD PTR [rbx+38h]
     call printf
 
+;---;
+;To get the name of symbols:
+; Using sh_link (the index of the string table associated with the symbol table): 
+; Each symbol tbl has an associated string table which contains the symbolic names for the symbols
+	;Check if sh_type is SHT_SYMTAB || SHT_DYNSYM
+SymTab64Check:
+	mov edx, DWORD PTR [rbx+4] ;sh_type
+	cmp edx, SHT_SYMTAB
+	jnz DynSymCheck
+DynSymCheck:
+	cmp edx, SHT_DYNSYM
+	jnz ParseSectionHeader64LoopCont
+	;Get sh_link
+	mov ecx, DWORD PTR [rbx+28h]
+	;Get the address of .strtab || .dynstr section header: lpFileBuffer + e_shoff + sh_link*e_shentsize
+	mov eax, e_shentsize
+	mul ecx
+	mov r8, lpFileBuffer
+	mov r9, e_shoff
+	add rax, r8
+	add rax, r9
+	;Get that string table section offset 
+	mov rdx, QWORD PTR [rax+18h] ;sh_offset
+	mov StringTableOffset, rdx
+;---;
+	lea rcx, msg_symboltable
+	call printf
+	;Get symbol table offset from sh_offset
+	mov rdi, lpFileBuffer
+	mov rdx, QWORD PTR [rbx+18h] ;sh_offset
+	add rdi, rdx
+	;Parse and print symbol table info
+	mov r14, 0 ; 2nd Counter
+	;Get symbols count: ST_ENTNUM = sh_size / ST_ENTSIZE
+	mov rax, QWORD PTR [rbx+20h] ;sh_size
+	mov rdx, 0
+	mov rcx, ST_ENTSIZE
+	div rcx
+	mov ST_ENTNUM, rax
+	ParseSymbolTable64Loop:
+		cmp r14, ST_ENTNUM
+		je ParseSectionHeader64LoopCont
+
+		lea rcx, msg_symboltable_symbol
+		mov rdx, r14
+		;Get current symbol name offset
+		mov rax, lpFileBuffer
+		add rax, StringTableOffset
+		mov ebx, DWORD PTR [rdi]
+		add rax, rbx
+		mov r8, rax
+		call printf
+		;st_name
+		lea rcx, msg_st_name
+		mov edx, DWORD PTR [rdi]
+		call printf
+		;st_info
+		lea rcx, msg_st_info
+		movzx edx, BYTE PTR [rdi+4]
+		call printf
+		;st_other
+		lea rcx, msg_st_other
+		movzx edx, BYTE PTR [rdi+5]
+		call printf
+		;st_shndx
+		lea rcx, msg_st_shndx
+		movzx edx, WORD PTR [rdi+6]
+		call printf
+		;st_value
+		lea rcx, msg_st_value
+		mov rdx, QWORD PTR [rdi+8]
+		call printf
+		;st_size
+		lea rcx, msg_st_size
+		mov rdx, QWORD PTR [rdi+10h]
+		call printf
+
+		inc r14
+		mov rax, ST_ENTSIZE
+		add rdi, rax
+		jmp ParseSymbolTable64Loop
+
+ParseSectionHeader64LoopCont:
 	inc r15
 	mov rax, CurrentOffset
 	mov ebx, e_shentsize 
@@ -355,10 +457,7 @@ ParseSectionHeader64Loop:
 	mov CurrentOffset, rax
 	jmp ParseSectionHeader64Loop
 	
-ParseSymbolTable64:
-;ParseSymbolTable64Loop:
-
-;	jmp ParseSymbolTable64Loop
+PLACEHOLDER:
 
 
 	jmp Exit
