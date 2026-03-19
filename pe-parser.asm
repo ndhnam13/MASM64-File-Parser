@@ -1,23 +1,20 @@
-;Linker addition dep
-;kernel32.lib
-;ucrt.lib
-;vcruntime.lib
-;msvcrt.lib
-;legacy_stdio_definitions.lib
-
-ExitProcess proto
-CreateFileA proto
-ReadFile  proto
-SetFilePointer proto
-VirtualAlloc proto
-extrn printf:proc
-
 .data
 ;Strings
     msg_32bit db "**FILE IS 32 BIT**", 10, 0
     msg_64bit db "**FILE IS 64 BIT**", 10, 0
 	msg_fail db "**FAIL**", 10, 0
 	path db "./sample.exe", 0
+	;Functions
+	LoadLibraryA_String db "LoadLibraryA", 0
+	GetProcAddress_String db "GetProcAddress", 0
+	CreateFileA_String db "CreateFileA", 0
+	ReadFile_String db "ReadFile", 0
+	SetFilePointer_String db "SetFilePointer", 0
+	VirtualAlloc_String db "VirtualAlloc", 0
+	ExitProcess_String db "ExitProcess", 0
+	printf_String db "printf", 0
+	;DLLs
+	msvcrt_String db "msvcrt.dll", 0
 ; DOS header
 	msg_dosheader db "1. DOS HEADER:", 10, 0
 	msg_dosheader_magic db 9, "Magic: 0x%X", 10, 0
@@ -88,6 +85,15 @@ extrn printf:proc
 	SIZEOF_IMAGE_FILE_HEADER dd 18h
 
 .data?
+;Functions addr
+	LoadLibraryA_Addr QWORD ?
+	GetProcAddress_Addr QWORD ?
+	CreateFileA_Addr QWORD ?
+	ReadFile_Addr QWORD ?
+	SetFilePointer_Addr QWORD ?
+	VirtualAlloc_Addr QWORD ?
+	ExitProcess_Addr QWORD ?
+	printf_Addr QWORD ?
 ;Others
 	hFile QWORD ?
 
@@ -193,6 +199,104 @@ extrn printf:proc
 .code
 main proc
 	sub rsp, 40
+;PEB walk
+	mov rbx, gs:[60h] ;PEB
+	mov rbx, [rbx+18h] ;Ldr
+	mov rbx, [rbx+20h] ;InMemoryOrderModuleList
+	mov rbx, [rbx] ;ntdll
+	mov rbx, [rbx] ;kernel32
+	mov r15, [rbx+20h] ;R15=kernel32 DllBase
+	;Get to exportDir
+	mov eax, DWORD PTR [r15+03Ch] ; e_lfanew
+	add rax, r15 ;At PE signature
+	mov eax, DWORD PTR [rax+88h] ; EAX = exportDir RVA
+	add rax, r15 ;RAX = exportDir
+	mov r10d, DWORD PTR [rax+18h] ;R10D = NumberOfNames
+    mov r11d, DWORD PTR [rax+1Ch] ;R11D = AddressOfFunctionRVA
+    add r11, r15
+    mov esi, DWORD PTR [rax+20h] ;ESI = AddressOfNamesRVA
+    add rsi, r15
+    mov edi, DWORD PTR [rax+24h] ;EDI = AddressOfNameOrdinalsRVA
+    add rdi, r15
+	mov rcx, 0 ;RCX = counter
+mov rcx, 0 ; RCX = counter
+searchFunctionLoop:
+	cmp ecx, r10d
+	je searchFunctionLoopDone
+	mov eax, DWORD PTR [rsi+4*rcx]
+	add rax, r15
+	lea r8, LoadLibraryA_String
+	mov r9, rax
+LoadLibACmpLoop:
+	mov r12b, [r8]
+	mov r13b, [r9]
+	cmp r12b, r13b
+	jne nextFunction
+	test r12b, r12b
+	jz foundLoadLibA
+	inc r8
+	inc r9
+	jmp LoadLibACmpLoop
+nextFunction:
+	lea r8, GetProcAddress_String
+	mov r9, rax
+GetProcAddrCmpLoop:
+	mov r12b, [r8]
+	mov r13b, [r9]
+	cmp r12b, r13b
+	jne searchFunctionLoopCont
+	test r12b, r12b
+	jz foundGetProcAddr
+	inc r8
+	inc r9
+	jmp GetProcAddrCmpLoop
+foundLoadLibA:
+	movzx edx, WORD PTR [rdi+rcx*2]
+	mov edx, DWORD PTR [r11+rdx*4]
+	add rdx, r15
+	mov LoadLibraryA_Addr, rdx
+	jmp searchFunctionLoopCont
+foundGetProcAddr:
+	movzx edx, WORD PTR [rdi+rcx*2]
+	mov edx, DWORD PTR [r11+rdx*4]
+	add rdx, r15
+	mov GetProcAddress_Addr, rdx
+searchFunctionLoopCont:
+	inc rcx
+	jmp searchFunctionLoop
+searchFunctionLoopDone:
+	;Get other functions
+	mov rcx, r15
+	lea rdx, CreateFileA_String
+	call GetProcAddress_Addr
+	mov CreateFileA_Addr, rax
+
+	mov rcx, r15
+	lea rdx, ReadFile_String
+	call GetProcAddress_Addr
+	mov ReadFile_Addr, rax
+
+	mov rcx, r15
+	lea rdx, SetFilePointer_String
+	call GetProcAddress_Addr
+	mov SetFilePointer_Addr, rax
+
+	mov rcx, r15
+	lea rdx, VirtualAlloc_String
+	call GetProcAddress_Addr
+	mov VirtualAlloc_Addr, rax
+
+	lea rcx, msvcrt_String
+	call LoadLibraryA_Addr
+	mov rcx, rax
+	lea rdx, printf_String
+	call GetProcAddress_Addr
+	mov printf_Addr, rax
+
+	mov rcx, r15
+	lea rdx, ExitProcess_String
+	call GetProcAddress_Addr
+	mov ExitProcess_Addr, rax
 
 ;Check PE file arch: Reading the offsets using SetFilePointer + ReadFile
 	;Get file handle
@@ -203,7 +307,7 @@ main proc
 	mov DWORD PTR [rsp+20h], 3 ;OPEN_EXISTING
 	mov DWORD PTR [rsp+28h], 1 ;FILE_ATTRIBUTE_READONLY
 	mov DWORD PTR [rsp+30h], 0
-	call CreateFileA
+	call CreateFileA_Addr
 	mov hFile, rax
 
 	;Read the DOS magic
@@ -212,7 +316,7 @@ main proc
 	mov r8, 2
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;Dos magic check
 	cmp [e_magic], 5A4Dh
 	jnz Exit
@@ -222,26 +326,26 @@ main proc
 	mov rdx, 3Ch
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer 
+	call SetFilePointer_Addr 
 	mov rcx, hFile
 	lea rdx, e_lfanew
 	mov r8, 4
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	
 	;Read + NT magic check
 	mov rcx, hFile
 	mov edx, e_lfanew
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, Signature
 	mov r8, 4
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	cmp [Signature], 00004550h
 	jnz Exit
 
@@ -254,12 +358,12 @@ main proc
 	mov edx, optional_header_offset
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, Magic
 	mov r8, 2
 	mov r9, 0
-	call ReadFile
+	call ReadFile_Addr
 
 ;Parsing File header
     ;Reading Machine
@@ -268,82 +372,82 @@ main proc
     add rdx, 4
     mov r8, 0
     mov r9, 0
-    call SetFilePointer
+    call SetFilePointer_Addr
     mov rcx, hFile
     lea rdx, Machine
     mov r8, 2
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-    call ReadFile
+    call ReadFile_Addr
     ;Read NumberOfSections
     mov rcx, hFile
     mov edx, e_lfanew
     add rdx, 6
     mov r8, 0
     mov r9, 0
-    call SetFilePointer
+    call SetFilePointer_Addr
     mov rcx, hFile
     lea rdx, NumberOfSections
     mov r8, 2
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-    call ReadFile
+    call ReadFile_Addr
     ;Read SizeOfOptionalHeader
     mov rcx, hFile
     mov edx, e_lfanew
     add rdx, 20
     mov r8, 0
     mov r9, 0
-    call SetFilePointer
+    call SetFilePointer_Addr
     mov rcx, hFile
     lea rdx, SizeOfOptionalHeader
     mov r8, 2
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-    call ReadFile
+    call ReadFile_Addr
     ;Read characteristics
     mov rcx, hFile
     mov edx, e_lfanew
     add rdx, 22
     mov r8, 0
     mov r9, 0
-    call SetFilePointer
+    call SetFilePointer_Addr
     mov rcx, hFile
     lea rdx, Characteristics
     mov r8, 2
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-    call ReadFile
+    call ReadFile_Addr
 
 ;Print info of DOS header
 	lea rcx, msg_dosheader
-	call printf
+	call printf_Addr
 	lea rcx, msg_dosheader_magic
 	movzx edx, e_magic
-	call printf
+	call printf_Addr
 	lea rcx, msg_dosheader_e_lfanew
 	mov edx, e_lfanew
-	call printf
+	call printf_Addr
 ;Print info of File header
 	lea rcx, msg_ntheader
-	call printf
+	call printf_Addr
 	lea rcx, msg_fileheader
-	call printf
+	call printf_Addr
 	lea rcx, msg_fileheader_signature
 	mov edx, Signature
-	call printf
+	call printf_Addr
     lea rcx, msg_fileheader_machine
     movzx edx, Machine
-    call printf
+    call printf_Addr
     lea rcx, msg_fileheader_numberofsections
     movzx edx, NumberOfSections
-    call printf
+    call printf_Addr
     lea rcx, msg_fileheader_sizeofoptionalheader
     movzx edx, SizeOfOptionalHeader
-	call printf
+	call printf_Addr
     lea rcx, msg_fileheader_characteristics
     movzx edx, Characteristics
-    call printf
+    call printf_Addr
 
 	;Check file architecture (Magic)
 	cmp [Magic], 020Bh
@@ -352,7 +456,7 @@ main proc
 ; Parsing Optional, Section header of 64 bit PE file
 PE64bit:
 	lea rcx, msg_64bit
-	call printf
+	call printf_Addr
 
 ;Parsing optional header
 	;SizeOfCode
@@ -361,117 +465,117 @@ PE64bit:
 	add rdx, 4
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfCode
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;SizeOfInitializedData
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 8
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfInitializedData
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;SizeOfUninitializedData
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 12
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfUninitializedData
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;AddressOfEntryPoint
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 16
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, AddressOfEntryPoint
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;BaseOfCode
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 20
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, BaseOfCode
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;ImageBase
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 24
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, ImageBase
     mov r8, 8
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;SectionAlignment
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 32
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SectionAlignment
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;FileAlignment
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 36
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, FileAlignment
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;SizeOfImage
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 56
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfImage
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;Parsing data directories
 	;ExportTable
 	mov rcx, hFile
@@ -479,13 +583,13 @@ PE64bit:
 	add rdx, 112
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, ExportTable
     mov r8, 8
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ExportTable]
 	mov ExportTable_RVA, eax
 	mov eax, DWORD PTR [ExportTable+4]
@@ -496,13 +600,13 @@ PE64bit:
 	add rdx, 120
 	xor r8, r8
 	xor r9, r9
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ImportTable
 	mov r8, 8
 	xor r9, r9
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ImportTable]
 	mov ImportTable_RVA, eax
 	mov eax, DWORD PTR [ImportTable+4]
@@ -513,13 +617,13 @@ PE64bit:
 	add rdx, 128
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ResourceTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ResourceTable]
 	mov ResourceTable_RVA, eax
 	mov eax, DWORD PTR [ResourceTable+4]
@@ -530,13 +634,13 @@ PE64bit:
 	add rdx, 136
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ExceptionTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ExceptionTable]
 	mov ExceptionTable_RVA, eax
 	mov eax, DWORD PTR [ExceptionTable+4]
@@ -547,13 +651,13 @@ PE64bit:
 	add rdx, 144
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, CertificateTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [CertificateTable]
 	mov CertificateTable_RVA, eax
 	mov eax, DWORD PTR [CertificateTable+4]
@@ -564,13 +668,13 @@ PE64bit:
 	add rdx, 152
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, BaseRelocationTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [BaseRelocationTable]
 	mov BaseRelocationTable_RVA, eax
 	mov eax, DWORD PTR [BaseRelocationTable+4]
@@ -581,13 +685,13 @@ PE64bit:
 	add rdx, 160
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, DebugDirectory
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [DebugDirectory]
 	mov DebugDirectory_RVA, eax
 	mov eax, DWORD PTR [DebugDirectory+4]
@@ -598,13 +702,13 @@ PE64bit:
 	add rdx, 168
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ArchitectureDirectory
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ArchitectureDirectory]
 	mov ArchitectureDirectory_RVA, eax
 	mov eax, DWORD PTR [ArchitectureDirectory+4]
@@ -615,13 +719,13 @@ PE64bit:
 	add rdx, 176
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, GlobalPtrDirectory
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [GlobalPtrDirectory]
 	mov GlobalPtrDirectory_RVA, eax
 	mov eax, DWORD PTR [GlobalPtrDirectory+4]
@@ -632,13 +736,13 @@ PE64bit:
 	add rdx, 184
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, TLSTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [TLSTable]
 	mov TLSTable_RVA, eax
 	mov eax, DWORD PTR [TLSTable+4]
@@ -649,13 +753,13 @@ PE64bit:
 	add rdx, 192
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, LoadConfigTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [LoadConfigTable]
 	mov LoadConfigTable_RVA, eax
 	mov eax, DWORD PTR [LoadConfigTable+4]
@@ -666,13 +770,13 @@ PE64bit:
 	add rdx, 200
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, BoundImportTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [BoundImportTable]
 	mov BoundImportTable_RVA, eax
 	mov eax, DWORD PTR [BoundImportTable+4]
@@ -683,13 +787,13 @@ PE64bit:
 	add rdx, 208
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ImportAddressTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ImportAddressTable]
 	mov ImportAddressTable_RVA, eax
 	mov eax, DWORD PTR [ImportAddressTable+4]
@@ -700,13 +804,13 @@ PE64bit:
 	add rdx, 216
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, DelayImportDescriptor
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [DelayImportDescriptor]
 	mov DelayImportDescriptor_RVA, eax
 	mov eax, DWORD PTR [DelayImportDescriptor+4]
@@ -717,13 +821,13 @@ PE64bit:
 	add rdx, 224
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, CLRRuntimeHeader
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [CLRRuntimeHeader]
 	mov CLRRuntimeHeader_RVA, eax
 	mov eax, DWORD PTR [CLRRuntimeHeader+4]
@@ -731,100 +835,100 @@ PE64bit:
 
 ;Print info of optional header
 	lea rcx, msg_optionalheader
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_magic
 	movzx edx, Magic
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofcode
 	mov edx, SizeOfCode
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofinitializeddata
 	mov edx, SizeOfInitializedData
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofuninitializeddata
 	mov edx, SizeOfUninitializedData
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_addressofentrypoint
 	mov edx, AddressOfEntryPoint
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_baseofcode
 	mov edx, BaseOfCode
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_imagebase
 	mov rdx, ImageBase
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sectionalignment
 	mov edx, SectionAlignment
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_filealignment
 	mov edx, FileAlignMent
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofimage
 	mov edx, SizeOfImage
-	call printf
+	call printf_Addr
 	;Print info of data directories
 	lea rcx, msg_optionalheader_datadir
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_exporttable
 	mov edx, ExportTable_RVA
 	mov r8d, ExportTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_importtable
 	mov edx, ImportTable_RVA
 	mov r8d, ImportTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_resourcetable
 	mov edx, ResourceTable_RVA
 	mov r8d, ResourceTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_exceptiontable
 	mov edx, ExceptionTable_RVA
 	mov r8d, ExceptionTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_certificatetable
 	mov edx, CertificateTable_RVA
 	mov r8d, CertificateTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_baserelocationtable
 	mov edx, BaseRelocationTable_RVA
 	mov r8d, BaseRelocationTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_debugdirectory
 	mov edx, DebugDirectory_RVA
 	mov r8d, DebugDirectory_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_architecturedirectory
 	mov edx, ArchitectureDirectory_RVA
 	mov r8d, ArchitectureDirectory_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_globalptrdirectory
 	mov edx, GlobalPtrDirectory_RVA
 	mov r8d, GlobalPtrDirectory_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_tlstable
 	mov edx, TLSTable_RVA
 	mov r8d, TLSTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_loadconfigtable
 	mov edx, LoadConfigTable_RVA
 	mov r8d, LoadConfigTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_boundimporttable
 	mov edx, BoundImportTable_RVA
 	mov r8d, BoundImportTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_importaddresstable
 	mov edx, ImportAddressTable_RVA
 	mov r8d, ImportAddressTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_delayimportdescriptor
 	mov edx, DelayImportDescriptor_RVA
 	mov r8d, DelayImportDescriptor_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_clrruntimeheader
 	mov edx, CLRRuntimeHeader_RVA
 	mov r8d, CLRRuntimeHeader_Size
-	call printf
+	call printf_Addr
 
 
 ;PARSING AND PRINTING SECTION HEADER + IMPORT DIRECTORY
@@ -852,7 +956,7 @@ PE64bit:
 	mov rdx, 40
 	mov r8, 00003000h
 	mov r9, 4
-	call VirtualAlloc
+	call VirtualAlloc_Addr
 
 	test rax, rax
 	jz ExitFail
@@ -864,7 +968,7 @@ PE64bit:
 	mov r15, 0 ;Counter
 
 	lea rcx, msg_sectionheader
-	call printf
+	call printf_Addr
 
 ParseSectionHeaderLoop:
 	cmp r15w, NumberOfSections
@@ -875,74 +979,74 @@ ParseSectionHeaderLoop:
 	mov edx, CurrentSectionOffset
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	mov rdx, CurrentSectionBuffer
 	mov r8, 40
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 
 	; Parsing section infos
 	lea rcx, msg_sectionheader_number
 	mov rdx, r15
-	call printf
+	call printf_Addr
 	;Offset, Save the current Offset
 	lea rcx, msg_sectionheader_offset
 	mov edx, CurrentSectionOffset
-	call printf
+	call printf_Addr
 	;Name
 	lea rcx, msg_sectionheader_name
 	mov rdx, CurrentSectionBuffer
-	call printf
+	call printf_Addr
 	;VirtualSize, Save the current VSize
 	lea rcx, msg_sectionheader_virtualsize
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+8]
 	mov CurrentSectionVSize, edx
-	call printf
+	call printf_Addr
 	;VirtualAddress, Save the current VA
 	lea rcx, msg_sectionheader_virtualaddress
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+12]
 	mov CurrentSectionVA, edx
-	call printf
+	call printf_Addr
 	;SizeOfRawData
 	lea rcx, msg_sectionheader_sizeofrawdata
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+16]
-	call printf
+	call printf_Addr
 	;PointerToRawData, save the current RawAddr
 	lea rcx, msg_sectionheader_pointertorawdata
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+20]
 	mov CurrentSectionRawAddr, edx
-	call printf
+	call printf_Addr
 	;PointerToRelocations
 	lea rcx, msg_sectionheader_pointertorelocations
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+24]
-	call printf
+	call printf_Addr
 	;PointerToLinenumbers
 	lea rcx, msg_sectionheader_pointertolinenumbers
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+28]
-	call printf
+	call printf_Addr
 	;NumberOfRelocations
 	lea rcx, msg_sectionheader_numberofrelocations
 	mov rax, CurrentSectionBuffer
 	movzx edx, WORD PTR [rax+32]
-	call printf
+	call printf_Addr
 	;NumberOfLinenumbers
 	lea rcx, msg_sectionheader_numberoflinenumbers
 	mov rax, CurrentSectionBuffer
 	movzx edx, WORD PTR [rax+34]
-	call printf
+	call printf_Addr
 	;Characteristics
 	lea rcx, msg_sectionheader_characteristics
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+36]
-	call printf
+	call printf_Addr
 
 	; Check which section contains import dir: 
 	;section[i]VA < importRVA < section[i]VA + section[i]VSize
@@ -955,7 +1059,7 @@ ParseSectionHeaderLoop:
 	jg ParseSectionHeaderLoopCont
 	lea rcx, msg_sectionheader_foundimporttable
 	mov rdx, CurrentSectionBuffer
-	call printf
+	call printf_Addr
 
 	;Save the section Raw Addr and VA contains import dir
 	mov ebx, CurrentSectionRawAddr
@@ -999,15 +1103,15 @@ ParseImportDir:
 	mov rdx, 20
 	mov r8, 00003000h
 	mov r9, 4
-	call VirtualAlloc 
+	call VirtualAlloc_Addr 
 	mov CurrentImportBuffer, rax
 	; Allocate 256b for reading names buffer 
-	; (Idea is to create a buffer large enough for ReadFile so that printf stops printing at null byte)
+	; (Idea is to create a buffer large enough for ReadFile_Addr so that printf_Addr stops printing at null byte)
 	mov rcx, 0
 	mov rdx, 256
 	mov r8, 00003000h
 	mov r9, 4
-	call VirtualAlloc 
+	call VirtualAlloc_Addr 
 	mov CurrentNameBuffer, rax
 
 	;Calculate TotalImports
@@ -1019,10 +1123,10 @@ ParseImportDir:
 	mov TotalImports, eax
 	;Print total import
 	lea rcx, msg_importdir
-	call printf
+	call printf_Addr
 	lea rcx, msg_importdir_totalimports
 	mov edx, TotalImports
-	call printf
+	call printf_Addr
 
 	;ImportOffset: <section>.RawAddr + (import.RVA - <section>.VA)
 	mov ebx, SectionContainsImportRawAddr
@@ -1041,13 +1145,13 @@ ParseImportLoop:
 	mov edx, CurrentImportOffset
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	mov rdx, CurrentImportBuffer
 	mov r8, 20
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 
 	;DLL name offset: <section>.RawAddr + (nameRVA - <section>.VA)
 	;nameRVA (byte 12-15)
@@ -1060,16 +1164,16 @@ ParseImportLoop:
 	mov edx, CurrentImportNameOffset
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	mov rdx, CurrentNameBuffer
 	mov r8, 256
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	lea rcx, msg_importdir_dllname
 	mov rdx, CurrentNameBuffer
-	call printf
+	call printf_Addr
 
 	;For each DLL, get the names of imported function, OFT (byte 0 - 3)
 	;firstThunkOffset: <section>.RawAddr + (OFT - <section>.VA)
@@ -1084,13 +1188,13 @@ ParseImportLoop:
 		mov edx, CurrentImportFirstThunkOffset
 		mov r8, 0
 		mov r9, 0
-		call SetFilePointer
+		call SetFilePointer_Addr
 		mov rcx, hFile
 		lea rdx, CurrentImportFunctionNameRVA
 		mov r8, 8
 		mov r9, 0
 		mov DWORD PTR [rsp+20h], 0
-		call ReadFile
+		call ReadFile_Addr
 		mov rbx, CurrentImportFunctionNameRVA
 		test rbx, rbx ; Check if 8 bit is 0 byte
 		je ParseImportLoopCont
@@ -1105,16 +1209,16 @@ ParseImportLoop:
 		mov edx, CurrentImportFunctionNameOffset
 		mov r8, 0
 		mov r9, 0
-		call SetFilePointer
+		call SetFilePointer_Addr
 		mov rcx, hFile
 		mov rdx, CurrentNameBuffer
 		mov r8, 256
 		mov r9, 0
 		mov DWORD PTR [rsp+20h], 0
-		call ReadFile
+		call ReadFile_Addr
 		lea rcx, msg_importdir_functionname
 		mov rdx, CurrentNameBuffer
-		call printf
+		call printf_Addr
 
 		add CurrentImportFirstThunkOffset, 8
 		jmp ParseFunctionLoop
@@ -1133,7 +1237,7 @@ ParseImportLoopCont:
 ; Parsing Optional, Section header of 32 bit PE file
 PE32bit:
 	lea rcx, msg_32bit
-	call printf
+	call printf_Addr
 
 ;Parsing optional header
 	;SizeOfCode
@@ -1142,130 +1246,130 @@ PE32bit:
 	add rdx, 4
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfCode
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;SizeOfInitializedData
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 8
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfInitializedData
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;SizeOfUninitializedData
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 12
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfUninitializedData
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;AddressOfEntryPoint
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 16
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, AddressOfEntryPoint
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;BaseOfCode
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 20
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, BaseOfCode
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;BaseOfData
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 24
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, BaseOfData32
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	;ImageBase
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 28
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, ImageBase32
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;SectionAlignment
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 32
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SectionAlignment
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;FileAlignment
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 36
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, FileAlignment
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;SizeOfImage
 	mov rcx, hFile
 	mov edx, optional_header_offset
 	add rdx, 56
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, SizeOfImage
     mov r8, 4
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	;Parsing data directories
 	;ExportTable
 	mov rcx, hFile
@@ -1273,13 +1377,13 @@ PE32bit:
 	add rdx, 96
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
     lea rdx, ExportTable
     mov r8, 8
     mov r9, 0
     mov DWORD PTR [rsp+20h], 0	
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ExportTable]
 	mov ExportTable_RVA, eax
 	mov eax, DWORD PTR [ExportTable+4]
@@ -1290,13 +1394,13 @@ PE32bit:
 	add rdx, 104
 	xor r8, r8
 	xor r9, r9
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ImportTable
 	mov r8, 8
 	xor r9, r9
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ImportTable]
 	mov ImportTable_RVA, eax
 	mov eax, DWORD PTR [ImportTable+4]
@@ -1307,13 +1411,13 @@ PE32bit:
 	add rdx, 112
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ResourceTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ResourceTable]
 	mov ResourceTable_RVA, eax
 	mov eax, DWORD PTR [ResourceTable+4]
@@ -1324,13 +1428,13 @@ PE32bit:
 	add rdx, 120
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ExceptionTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ExceptionTable]
 	mov ExceptionTable_RVA, eax
 	mov eax, DWORD PTR [ExceptionTable+4]
@@ -1341,13 +1445,13 @@ PE32bit:
 	add rdx, 128
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, CertificateTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [CertificateTable]
 	mov CertificateTable_RVA, eax
 	mov eax, DWORD PTR [CertificateTable+4]
@@ -1358,13 +1462,13 @@ PE32bit:
 	add rdx, 136
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, BaseRelocationTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [BaseRelocationTable]
 	mov BaseRelocationTable_RVA, eax
 	mov eax, DWORD PTR [BaseRelocationTable+4]
@@ -1375,13 +1479,13 @@ PE32bit:
 	add rdx, 144
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, DebugDirectory
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [DebugDirectory]
 	mov DebugDirectory_RVA, eax
 	mov eax, DWORD PTR [DebugDirectory+4]
@@ -1392,13 +1496,13 @@ PE32bit:
 	add rdx, 152
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ArchitectureDirectory
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ArchitectureDirectory]
 	mov ArchitectureDirectory_RVA, eax
 	mov eax, DWORD PTR [ArchitectureDirectory+4]
@@ -1409,13 +1513,13 @@ PE32bit:
 	add rdx, 160
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, GlobalPtrDirectory
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [GlobalPtrDirectory]
 	mov GlobalPtrDirectory_RVA, eax
 	mov eax, DWORD PTR [GlobalPtrDirectory+4]
@@ -1426,13 +1530,13 @@ PE32bit:
 	add rdx, 168
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, TLSTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [TLSTable]
 	mov TLSTable_RVA, eax
 	mov eax, DWORD PTR [TLSTable+4]
@@ -1443,13 +1547,13 @@ PE32bit:
 	add rdx, 176
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, LoadConfigTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [LoadConfigTable]
 	mov LoadConfigTable_RVA, eax
 	mov eax, DWORD PTR [LoadConfigTable+4]
@@ -1460,13 +1564,13 @@ PE32bit:
 	add rdx, 184
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, BoundImportTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [BoundImportTable]
 	mov BoundImportTable_RVA, eax
 	mov eax, DWORD PTR [BoundImportTable+4]
@@ -1477,13 +1581,13 @@ PE32bit:
 	add rdx, 192
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, ImportAddressTable
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [ImportAddressTable]
 	mov ImportAddressTable_RVA, eax
 	mov eax, DWORD PTR [ImportAddressTable+4]
@@ -1494,13 +1598,13 @@ PE32bit:
 	add rdx, 200
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, DelayImportDescriptor
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [DelayImportDescriptor]
 	mov DelayImportDescriptor_RVA, eax
 	mov eax, DWORD PTR [DelayImportDescriptor+4]
@@ -1511,13 +1615,13 @@ PE32bit:
 	add rdx, 208
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	lea rdx, CLRRuntimeHeader
 	mov r8, 8
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	mov eax, DWORD PTR [CLRRuntimeHeader]
 	mov CLRRuntimeHeader_RVA, eax
 	mov eax, DWORD PTR [CLRRuntimeHeader+4]
@@ -1525,103 +1629,103 @@ PE32bit:
 
 ;Print info of optional header
 	lea rcx, msg_optionalheader
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_magic
 	movzx edx, Magic
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofcode
 	mov edx, SizeOfCode
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofinitializeddata
 	mov edx, SizeOfInitializedData
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofuninitializeddata
 	mov edx, SizeOfUninitializedData
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_addressofentrypoint
 	mov edx, AddressOfEntryPoint
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_baseofcode
 	mov edx, BaseOfCode
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_baseofdata32
 	mov edx, BaseOfData32
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_imagebase
 	mov edx, ImageBase32
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sectionalignment
 	mov edx, SectionAlignment
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_filealignment
 	mov edx, FileAlignMent
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_sizeofimage
 	mov edx, SizeOfImage
-	call printf
+	call printf_Addr
 	;Print info of data directories
 	lea rcx, msg_optionalheader_datadir
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_exporttable
 	mov edx, ExportTable_RVA
 	mov r8d, ExportTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_importtable
 	mov edx, ImportTable_RVA
 	mov r8d, ImportTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_resourcetable
 	mov edx, ResourceTable_RVA
 	mov r8d, ResourceTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_exceptiontable
 	mov edx, ExceptionTable_RVA
 	mov r8d, ExceptionTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_certificatetable
 	mov edx, CertificateTable_RVA
 	mov r8d, CertificateTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_baserelocationtable
 	mov edx, BaseRelocationTable_RVA
 	mov r8d, BaseRelocationTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_debugdirectory
 	mov edx, DebugDirectory_RVA
 	mov r8d, DebugDirectory_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_architecturedirectory
 	mov edx, ArchitectureDirectory_RVA
 	mov r8d, ArchitectureDirectory_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_globalptrdirectory
 	mov edx, GlobalPtrDirectory_RVA
 	mov r8d, GlobalPtrDirectory_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_tlstable
 	mov edx, TLSTable_RVA
 	mov r8d, TLSTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_loadconfigtable
 	mov edx, LoadConfigTable_RVA
 	mov r8d, LoadConfigTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_boundimporttable
 	mov edx, BoundImportTable_RVA
 	mov r8d, BoundImportTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_importaddresstable
 	mov edx, ImportAddressTable_RVA
 	mov r8d, ImportAddressTable_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_delayimportdescriptor
 	mov edx, DelayImportDescriptor_RVA
 	mov r8d, DelayImportDescriptor_Size
-	call printf
+	call printf_Addr
 	lea rcx, msg_optionalheader_datadir_clrruntimeheader
 	mov edx, CLRRuntimeHeader_RVA
 	mov r8d, CLRRuntimeHeader_Size
-	call printf
+	call printf_Addr
 
 ; Parsing section
 	;Calculate section header offset
@@ -1635,10 +1739,10 @@ PE32bit:
 	mov rdx, 40
 	mov r8, 00003000h
 	mov r9, 4
-	call VirtualAlloc
+	call VirtualAlloc_Addr
 	mov CurrentSectionBuffer, rax
 	lea rcx, msg_sectionheader
-	call printf
+	call printf_Addr
 	mov r15, 0 ; Counter
 	;Parsing section header loop
 ParseSectionHeaderLoop32:
@@ -1646,74 +1750,74 @@ ParseSectionHeaderLoop32:
 	je ParseImportDir32
 	lea rcx, msg_sectionheader_number
 	mov rdx, r15
-	call printf
+	call printf_Addr
 
 	; Fill the buffer
 	mov rcx, hFile
 	mov edx, CurrentSectionOffset
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	mov rdx, CurrentSectionBuffer
 	mov r8, 40
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 
 	; Read and print info
 	;Name
 	lea rcx, msg_sectionheader_name
 	mov rdx, CurrentSectionBuffer
-	call printf
+	call printf_Addr
 	;VSize + Save current VSize
 	lea rcx, msg_sectionheader_virtualsize
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR[rax+8]
 	mov CurrentSectionVSize, edx
-	call printf
+	call printf_Addr
 	;VirtualAddress + Save current VA
 	lea rcx, msg_sectionheader_virtualaddress
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR[rax+12]
 	mov CurrentSectionVA, edx
-	call printf
+	call printf_Addr
 	;SizeOfRawData
 	lea rcx, msg_sectionheader_sizeofrawdata
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+16]
-	call printf
+	call printf_Addr
 	;PointerToRawData, save the current RawAddr
 	lea rcx, msg_sectionheader_pointertorawdata
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+20]
 	mov CurrentSectionRawAddr, edx
-	call printf
+	call printf_Addr
 	;PointerToRelocations
 	lea rcx, msg_sectionheader_pointertorelocations
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+24]
-	call printf
+	call printf_Addr
 	;PointerToLinenumbers
 	lea rcx, msg_sectionheader_pointertolinenumbers
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+28]
-	call printf
+	call printf_Addr
 	;NumberOfRelocations
 	lea rcx, msg_sectionheader_numberofrelocations
 	mov rax, CurrentSectionBuffer
 	movzx edx, WORD PTR [rax+32]
-	call printf
+	call printf_Addr
 	;NumberOfLinenumbers
 	lea rcx, msg_sectionheader_numberoflinenumbers
 	mov rax, CurrentSectionBuffer
 	movzx edx, WORD PTR [rax+34]
-	call printf
+	call printf_Addr
 	;Characteristics
 	lea rcx, msg_sectionheader_characteristics
 	mov rax, CurrentSectionBuffer
 	mov edx, DWORD PTR [rax+36]
-	call printf
+	call printf_Addr
 
 	;Check for sectionVA < importRVA < sectionVA + sectionVSize
 	mov eax, ImportTable_RVA
@@ -1726,7 +1830,7 @@ ParseSectionHeaderLoop32:
 	jae ParseSectionHeaderLoop32Cont
 	lea rcx, msg_sectionheader_foundimporttable
 	mov rdx, CurrentSectionBuffer
-	call printf
+	call printf_Addr
 
 	;Save the section Raw Addr and VA that contains import dir
 	mov ebx, CurrentSectionRawAddr
@@ -1746,15 +1850,15 @@ ParseImportDir32:
 	mov rdx, 20
 	mov r8, 00003000h
 	mov r9, 4
-	call VirtualAlloc 
+	call VirtualAlloc_Addr 
 	mov CurrentImportBuffer, rax
 	; Allocate 256b for reading names buffer 
-	; (Idea is to create a buffer large enough for ReadFile so that printf stops printing at null byte)
+	; (Idea is to create a buffer large enough for ReadFile_Addr so that printf_Addr stops printing at null byte)
 	mov rcx, 0
 	mov rdx, 256
 	mov r8, 00003000h
 	mov r9, 4
-	call VirtualAlloc 
+	call VirtualAlloc_Addr 
 	mov CurrentNameBuffer, rax
 
 	;Calculate TotalImports
@@ -1766,10 +1870,10 @@ ParseImportDir32:
 	mov TotalImports, eax
 	;Print total import
 	lea rcx, msg_importdir
-	call printf
+	call printf_Addr
 	lea rcx, msg_importdir_totalimports
 	mov edx, TotalImports
-	call printf
+	call printf_Addr
 
 	;ImportOffset: <section>.RawAddr + (import.RVA - <section>.VA)
 	mov ebx, SectionContainsImportRawAddr
@@ -1788,13 +1892,13 @@ ParseImportLoop32:
 	mov edx, CurrentImportOffset
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	mov rdx, CurrentImportBuffer
 	mov r8, 20
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 
 	;DLL name offset: <section>.RawAddr + (nameRVA - <section>.VA)
 	;nameRVA (byte 12-15)
@@ -1807,16 +1911,16 @@ ParseImportLoop32:
 	mov edx, CurrentImportNameOffset
 	mov r8, 0
 	mov r9, 0
-	call SetFilePointer
+	call SetFilePointer_Addr
 	mov rcx, hFile
 	mov rdx, CurrentNameBuffer
 	mov r8, 256
 	mov r9, 0
 	mov DWORD PTR [rsp+20h], 0
-	call ReadFile
+	call ReadFile_Addr
 	lea rcx, msg_importdir_dllname
 	mov rdx, CurrentNameBuffer
-	call printf
+	call printf_Addr
 
 	;For each DLL, get the names of imported function, OFT (byte 0 - 3)
 	;firstThunkOffset: <section>.RawAddr + (OFT - <section>.VA)
@@ -1831,13 +1935,13 @@ ParseImportLoop32:
 		mov edx, CurrentImportFirstThunkOffset
 		mov r8, 0
 		mov r9, 0
-		call SetFilePointer
+		call SetFilePointer_Addr
 		mov rcx, hFile
 		lea rdx, CurrentImportFunctionNameRVA32
 		mov r8, 4
 		mov r9, 0
 		mov DWORD PTR [rsp+20h], 0
-		call ReadFile
+		call ReadFile_Addr
 		mov ebx, CurrentImportFunctionNameRVA32
 		test ebx, ebx ; Check if 4 bit is 0 byte
 		je ParseImportLoop32Cont
@@ -1852,16 +1956,16 @@ ParseImportLoop32:
 		mov edx, CurrentImportFunctionNameOffset
 		mov r8, 0
 		mov r9, 0
-		call SetFilePointer
+		call SetFilePointer_Addr
 		mov rcx, hFile
 		mov rdx, CurrentNameBuffer
 		mov r8, 256
 		mov r9, 0
 		mov DWORD PTR [rsp+20h], 0
-		call ReadFile
+		call ReadFile_Addr
 		lea rcx, msg_importdir_functionname
 		mov rdx, CurrentNameBuffer
-		call printf
+		call printf_Addr
 
 		add CurrentImportFirstThunkOffset, 4
 		jmp ParseFunctionLoop32
@@ -1874,14 +1978,14 @@ ParseImportLoop32Cont:
 	jmp ParseImportLoop32
 
 	jmp Exit
-Exit:
-	mov rcx, 0
-	call ExitProcess
 
 ExitFail:
 	lea rcx, msg_fail
-	call printf
+	call printf_Addr
 	mov rcx, 0
-	call ExitProcess
+	call ExitProcess_Addr
+Exit:
+	mov rcx, 0
+	call ExitProcess_Addr
 main endp
 END
